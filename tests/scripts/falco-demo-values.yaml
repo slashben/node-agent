@@ -1,0 +1,10 @@
+driver:
+  kind: modern_ebpf
+tty: true
+falcosidekick:
+  enabled: true
+  config:
+    alertmanager:
+      hostport: "http://alertmanager-operated.monitoring.svc.cluster.local:9093"
+      endpoint: "/api/v2/alerts"
+      expireafter: "3600"

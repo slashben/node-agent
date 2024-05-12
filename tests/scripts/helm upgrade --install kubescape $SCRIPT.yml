@@ -1,0 +1,1 @@
+helm upgrade --install kubescape $SCRIPT_DIR/../chart --set clusterName=`kubectl config current-context` -n kubescape --create-namespace

@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# This script is used to setup a system test cluster on a single machine.
+# This script is used to setup a demo cluster on a single machine.
 
 # Function to print message and exit.
 function error_exit {
   kubectl delete namespace monitoring 2> /dev/null
   kubectl delete namespace kubescape 2> /dev/null
+  kubectl delete namespace falco 2> /dev/null
   echo "$1" 1>&2
   exit 1
 }
@@ -21,26 +22,6 @@ if ! [ -x "$(command -v minikube)" ] && ! [ -x "$(command -v kind)" ]; then
   echo "Either minikube or kind is not installed. Please install one of them and try again."
   exit 1
 fi
-
-# If node-agent:latest image is available, load it into the cluster.
-use_local_image=false
-if docker image inspect node-agent:latest > /dev/null 2>&1; then
-  use_local_image=true
-  # Check if the cluster is kind cluster by checking current context.
-  if [ "$(kubectl config current-context)" == "kind-kind" ]; then
-    echo "Kind cluster detected."
-    # Load the docker image into the kind cluster.
-    kind load docker-image node-agent:latest || error_exit "Failed to load docker image into kind cluster."
-  fi
-
-  # Check if the cluster is minikube cluster by checking current context.
-  if [ "$(kubectl config current-context)" == "minikube" ]; then
-    echo "Minikube cluster detected."
-    # Load the docker image into the minikube cluster.
-    minikube image load node-agent:latest || error_exit "Failed to load docker image into minikube cluster."
-  fi
-fi
-
 
 # Check that helm is installed.
 if ! [ -x "$(command -v helm)" ]; then
@@ -59,16 +40,13 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 # Check that the prometheus pod is running
 kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s || error_exit "Prometheus did not start."
 
-STORAGE_TAG=$(./storage-tag.sh)
-if $use_local_image; then
-  echo "Using local image for node-agent."
-  NODE_AGENT_TAG="node-agent:latest"
-else
-  NODE_AGENT_TAG=$(./node-agent-tag.sh)
-fi
+# Get the absolute path of the directory where this script is located.
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+STORAGE_TAG=$($SCRIPT_DIR/storage-tag.sh)
+NODE_AGENT_TAG=$($SCRIPT_DIR/node-agent-tag.sh)
 
 # Install node agent chart
-helm upgrade --install kubescape ../chart --set clusterName=`kubectl config current-context` \
+helm upgrade --install kubescape $SCRIPT_DIR/../chart --set clusterName=`kubectl config current-context` \
     --set nodeAgent.image.tag=$NODE_AGENT_TAG \
     --set storage.image.tag=$STORAGE_TAG \
     -n kubescape --create-namespace --wait --timeout 5m || error_exit "Failed to install node-agent chart."
@@ -76,8 +54,18 @@ helm upgrade --install kubescape ../chart --set clusterName=`kubectl config curr
 # Check that the node-agent pod is running
 kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=node-agent -n kubescape --timeout=300s || error_exit "Node Agent did not start."
 
+# if WITH_FALCO is set to true, install falco
+if [ "$WITH_FALCO" = "true" ]; then
+  helm repo add falcosecurity https://falcosecurity.github.io/charts || error_exit "Failed to add falco helm repo."
+  helm repo update || error_exit "Failed to update helm repos."
+  helm upgrade --create-namespace --install falco -n falco -f falco-demo-values.yaml  falcosecurity/falco --wait --timeout 5m || error_exit "Failed to install falco."
+  kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=falco -n falco --timeout=300s || error_exit "Falco did not start."
+fi
+
 echo "System test cluster setup complete."
 
+
 # port forward prometheus
-# kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
-# kubectl port-forward svc/alertmanager-operated 9093:9093 -n monitoring &
+kubectl port-forward svc/alertmanager-operated 9093:9093 -n monitoring &
+# Open browser to view alert manager
+xdg-open http://localhost:9093
